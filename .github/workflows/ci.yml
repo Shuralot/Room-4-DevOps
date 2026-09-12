@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Princípio do menor privilégio: token com leitura apenas
+permissions:
+  contents: read
+
+jobs:
+  # Gate de Lint: Garante padrão de código e imports com ruff
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: '3.12'
+
+      - name: Install Ruff
+        run: pip install ruff
+
+      - name: Run Ruff Lint
+        run: ruff check .
+
+  # Gate de Testes: Matrix de 3 versões chamando o Reusable Workflow
+  test:
+    name: Test
+    needs: lint
+    strategy:
+      fail-fast: false # Se uma versão quebrar, as outras continuam rodando
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+    uses: ./.github/workflows/_reusable-test.yml
+    with:
+      python-version: ${{ matrix.python-version }}
+
+  # Deploy em Staging: Reivindica o environment com aprovação manual (Required Reviewer)
+  # Só roda em push na branch main (não roda em PR)
+  deploy-staging:
+    name: Deploy to staging (dummy)
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.todolist.local
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Simulated Staging Deployment
+        run: |
+          echo "Deploying to Staging Environment with required reviewer approval..."
+          echo "Target Staging URL: ${{ secrets.STAGING_URL }}"
+
+  # Build e Push da Imagem no Docker Hub após todos os gates passarem
+  docker-build-push:
+    name: Build & Push Docker Image
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@6524bf65af31da8d45b59e8c27de4bd072b392f5 # v3.8.0
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Determine Docker Tags
+        id: tags
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          TAG_LATEST="${{ secrets.DOCKERHUB_USERNAME }}/app-k8s-todolist:latest"
+          TAG_SHA="${{ secrets.DOCKERHUB_USERNAME }}/app-k8s-todolist:${SHORT_SHA}"
+          echo "tags=${TAG_LATEST},${TAG_SHA}" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4 # v6.15.0
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            IMAGE_TAGS=latest,${{ steps.tags.outputs.short_sha }}
+
+  # Notificação do status via Webhook (Discord/Slack)
+  # Roda SEMPRE (if: always()) para notificar tanto sucesso quanto falha
+  notify:
+    name: Notification Webhook
+    needs: [lint, test, deploy-staging, docker-build-push]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Notification
+        run: |
+          STATUS="SUCCESS"
+          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ] || [ "${{ contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            STATUS="FAILURE"
+          fi
+          
+          PAYLOAD=$(cat <<EOF
+          {
+            "text": "Pipeline CI: ${STATUS}!\n• Evento: ${{ github.event_name }}\n• Branch/Ref: ${{ github.ref }}\n• Commit: ${{ github.sha }}\n• Autor: ${{ github.actor }}\n• Logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          }
+          EOF
+          )
+          
+          if [ -n "${{ secrets.NOTIFY_WEBHOOK_URL }}" ]; then
+            curl -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "${{ secrets.NOTIFY_WEBHOOK_URL }}" || true
+          else
+            echo "NOTIFY_WEBHOOK_URL não configurado. Notificação ignorada."
+          fi

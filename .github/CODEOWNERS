@@ -1,0 +1,8 @@
+# Donos padrão para qualquer alteração no repositório
+*                       @Shuralot
+
+# Alterações em pipelines de CI/CD exigem revisão do owner
+/.github/workflows/     @Shuralot
+
+# Alterações nos manifestos de Kubernetes
+/k8s/                   @Shuralot
