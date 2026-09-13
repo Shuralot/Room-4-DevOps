@@ -4,7 +4,8 @@
 
 ## 👥 Membros da Equipe
 - **@Shuralot** (Owner)
-<!-- Adicione os outros membros aqui -->
+-  **@jfredericocavalcanti**
+- **@gustavolucen4**
 
 ---
 
