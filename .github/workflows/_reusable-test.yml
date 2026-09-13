@@ -40,7 +40,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: Trivy Filesystem Scan (Security Gate)
-        uses: aquasecurity/setup-trivy@18856108152e0a78627e7f9506691cb52822a16d # v0.2.6
+        uses: aquasecurity/setup-trivy@e07451d2e059ed86c2870430ea286b3a9e0bf241 # v0.2.6
         with:
           scan-type: 'fs'
           ignore-unfixed: true
