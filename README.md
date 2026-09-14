@@ -6,6 +6,7 @@
 - **@Shuralot** (Owner) Júlio
 -  **@jfredericocavalcanti**
 - **@gustavolucen4**
+- **@holandalelis**
 
 ---
 
