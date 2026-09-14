@@ -5,4 +5,4 @@
 /.github/workflows/     @Shuralot
 
 # Alterações nos manifestos de Kubernetes
-/k8s/                   @Shuralot @gustavolucen4 @jfredericocavalcanti
+/k8s/                   @Shuralot @gustavolucen4 @jfredericocavalcanti @fabalmeida @holandalelis
