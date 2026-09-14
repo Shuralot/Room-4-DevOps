@@ -3,10 +3,12 @@
 [![CI](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/ci.yml/badge.svg)](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/ci.yml)
 
 ## 👥 Membros da Equipe
-- **@Shuralot** (Owner)
--  **@jfredericocavalcanti**
-- **@gustavolucen4**
-- **@holandalelis**
+<<<<<<< HEAD
+- **@Shuralot** Júlio Santos
+-  **@jfredericocavalcanti** Frederico Cavalcanti
+- **@gustavolucen4**   Gustavo lucena silva
+- **@fabalmeida** Felipe Almeida
+- **@holandalelis** Pedro Holanda Lelis
 
 ---
 
