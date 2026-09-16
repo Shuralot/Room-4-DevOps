@@ -1,0 +1,10 @@
+---
+- name: Configurar servidor da aplicação
+  hosts: app_server
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: docker
+    - role: kubernetes
+  #  - role: application

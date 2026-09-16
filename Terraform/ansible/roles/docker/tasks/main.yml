@@ -1,0 +1,24 @@
+---
+- name: Instalar pacotes necessários
+  ansible.builtin.dnf:
+    name: "{{ docker_packages }}"
+    state: present
+
+- name: Instalar Docker SDK para Python
+  ansible.builtin.pip:
+    name: docker
+    state: present
+    executable: pip3
+    extra_args: "--ignore-installed"
+
+- name: Habilitar e iniciar Docker
+  ansible.builtin.service:
+    name: "{{ docker_service_name }}"
+    state: started
+    enabled: true
+
+- name: Adicionar ec2-user ao grupo docker
+  ansible.builtin.user:
+    name: ec2-user
+    groups: docker
+    append: true

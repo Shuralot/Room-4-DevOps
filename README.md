@@ -3,7 +3,6 @@
 [![CI](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/ci.yml/badge.svg)](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/ci.yml)
 
 ## 👥 Membros da Equipe
-<<<<<<< HEAD
 - **@Shuralot** Júlio Santos
 -  **@jfredericocavalcanti** Frederico Cavalcanti
 - **@gustavolucen4**   Gustavo lucena silva

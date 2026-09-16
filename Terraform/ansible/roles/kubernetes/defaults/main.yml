@@ -1,0 +1,25 @@
+---
+# Versões dos binários (fixas para reprodutibilidade)
+kind_version: "v0.24.0"
+kubectl_release: "stable" # usa https://dl.k8s.io/release/stable.txt
+
+# Nome do cluster kind e portas expostas no host.
+# Podem ser sobrescritas por host_vars vindas do inventário gerado pelo Terraform.
+kind_cluster_name: "devops-labs"
+kind_api_port: 6443
+kind_http_port: 80
+kind_https_port: 443
+
+kind_config_path: "/home/ec2-user/kind-config.yaml"
+kubeconfig_remote_path: "/home/ec2-user/kubeconfig-{{ kind_cluster_name }}.yaml"
+
+# Endereço público usado para reescrever o kubeconfig (OpenLens/Freelens
+# acessam o cluster de fora da VM). Por padrão usa o IP público injetado
+# pelo Terraform no inventário; pode ser sobrescrito manualmente.
+public_ip: "{{ ansible_host }}"
+
+ingress_nginx_manifest_url: "https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml"
+
+# Onde o kubeconfig é salvo na máquina de controle (local), para uso no
+# OpenLens/Freelens.
+kubeconfig_local_dest: "{{ playbook_dir }}/../kubeconfig-{{ kind_cluster_name }}.yaml"
