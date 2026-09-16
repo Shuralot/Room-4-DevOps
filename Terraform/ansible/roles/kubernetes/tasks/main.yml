@@ -1,0 +1,114 @@
+---
+# Pré-requisito: a role "docker" já deve ter instalado e iniciado o Docker
+# antes desta role (ver ansible/site.yml).
+
+- name: Instalar kind
+  ansible.builtin.get_url:
+    url: "https://kind.sigs.k8s.io/dl/{{ kind_version }}/kind-linux-amd64"
+    dest: /usr/local/bin/kind
+    mode: "0755"
+    owner: root
+    group: root
+
+- name: Obter versão estável do kubectl
+  ansible.builtin.uri:
+    url: "https://dl.k8s.io/release/{{ kubectl_release }}.txt"
+    return_content: true
+  register: kubectl_stable_version
+  when: kubectl_release == "stable"
+
+- name: Definir versão do kubectl a instalar
+  ansible.builtin.set_fact:
+    kubectl_version: "{{ kubectl_stable_version.content | trim if kubectl_release == 'stable' else kubectl_release }}"
+
+- name: Instalar kubectl
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl"
+    dest: /usr/local/bin/kubectl
+    mode: "0755"
+    owner: root
+    group: root
+
+- name: Gerar kind-config.yaml
+  ansible.builtin.template:
+    src: kind-config.yaml.j2
+    dest: "{{ kind_config_path }}"
+    owner: ec2-user
+    group: ec2-user
+    mode: "0644"
+
+- name: Verificar clusters kind existentes
+  ansible.builtin.command: kind get clusters
+  register: kind_clusters
+  changed_when: false
+  failed_when: false # retorna rc=1 quando ainda não existe nenhum cluster
+
+- name: Criar o cluster kind
+  ansible.builtin.command: >
+    kind create cluster --name {{ kind_cluster_name }}
+    --config {{ kind_config_path }}
+    --kubeconfig /root/.kube/config
+  when: kind_cluster_name not in (kind_clusters.stdout_lines | default([]))
+
+- name: Aguardar o node control-plane ficar Ready
+  ansible.builtin.command: >
+    kubectl wait --for=condition=Ready node --all --timeout=180s
+    --context kind-{{ kind_cluster_name }}
+  changed_when: false
+  environment:
+    KUBECONFIG: "/root/.kube/config"
+
+- name: Instalar o ingress-nginx
+  ansible.builtin.command: >
+    kubectl apply -f {{ ingress_nginx_manifest_url }}
+    --context kind-{{ kind_cluster_name }}
+  register: ingress_apply
+  changed_when: "'created' in ingress_apply.stdout or 'configured' in ingress_apply.stdout"
+  environment:
+    KUBECONFIG: "/root/.kube/config"
+
+- name: Aguardar o pod do ingress-nginx ficar pronto
+  ansible.builtin.command: >
+    kubectl wait --namespace ingress-nginx
+    --for=condition=ready pod
+    --selector=app.kubernetes.io/component=controller
+    --timeout=120s
+    --context kind-{{ kind_cluster_name }}
+  changed_when: false
+  environment:
+    KUBECONFIG: "/root/.kube/config"
+
+- name: Gerar kubeconfig apontando para o IP público
+  ansible.builtin.shell: >
+    kind get kubeconfig --name {{ kind_cluster_name }}
+    | sed "s#https://0.0.0.0:{{ kind_api_port }}#https://{{ public_ip }}:{{ kind_api_port }}#"
+    | sed "s#certificate-authority-data:.*#insecure-skip-tls-verify: true#"
+    > {{ kubeconfig_remote_path }}
+  changed_when: true
+  environment:
+    KUBECONFIG: "/root/.kube/config"
+
+- name: Ajustar dono do kubeconfig gerado
+  ansible.builtin.file:
+    path: "{{ kubeconfig_remote_path }}"
+    owner: ec2-user
+    group: ec2-user
+    mode: "0600"
+
+- name: Buscar o kubeconfig para a máquina de controle (uso local no OpenLens/Freelens)
+  ansible.builtin.fetch:
+    src: "{{ kubeconfig_remote_path }}"
+    dest: "{{ kubeconfig_local_dest }}"
+    flat: true
+
+- name: Validar o cluster (kubectl get nodes)
+  ansible.builtin.command: >
+    kubectl get nodes --context kind-{{ kind_cluster_name }}
+  register: kind_nodes
+  changed_when: false
+  environment:
+    KUBECONFIG: "/root/.kube/config"
+
+- name: Mostrar nodes do cluster
+  ansible.builtin.debug:
+    var: kind_nodes.stdout_lines

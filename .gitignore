@@ -6,3 +6,23 @@ venv/
 .ruff_cache/
 *.db
 .vscode/settings.json
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+
+# Ansible & Secrets
+**/hosts.yml
+**/hosts.ini
+**/vault-password.txt
+**/*.pem
+**/id_rsa
+**/id_rsa.pub
+
+# Kubernetes & Cluster credentials
+kubeconfig*.yaml
+**/kubeconfig*.yaml
+

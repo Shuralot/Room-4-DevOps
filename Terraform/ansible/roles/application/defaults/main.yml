@@ -1,0 +1,11 @@
+---
+app_name: cloud-lab-02-app
+app_image: docker/getting-started
+app_version: latest
+app_port: 3000
+container_port: 3000
+app_health_path: "/"
+
+app_environment:
+  APP_SECRET: "{{ vault_app_secret }}"
+  ADMIN_PASSWORD: "{{ vault_admin_password }}"

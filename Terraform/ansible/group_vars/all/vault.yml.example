@@ -1,0 +1,6 @@
+---
+# Copie este arquivo para vault.yml e execute:
+# ansible-vault encrypt ansible/group_vars/all/vault.yml
+
+vault_app_secret: "alterar-este-valor"
+vault_admin_password: "alterar-este-valor"
