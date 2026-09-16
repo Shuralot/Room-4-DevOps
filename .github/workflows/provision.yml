@@ -1,0 +1,104 @@
+name: Provisionar infraestrutura
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "O que executar"
+        required: true
+        default: apply
+        type: choice
+        options:
+          - apply
+          - destroy
+
+env:
+  AWS_REGION: us-east-1
+  PROJECT_DIR: Terraform # pasta dentro do repo onde está terraform/ ansible/ scripts/
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # Remova a linha abaixo se NÃO for AWS Academy Learner Lab
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Instalar Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+
+      - name: Instalar Ansible e collections
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install ansible
+          ansible-galaxy collection install -r "$PROJECT_DIR/ansible/requirements.yml"
+
+      - name: Preparar chave SSH (a partir do secret)
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub
+
+      - name: Preparar Ansible Vault (a partir dos secrets)
+        run: |
+          printf '%s\n' "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > "$PROJECT_DIR/ansible/group_vars/all/vault-password.txt"
+          chmod 600 "$PROJECT_DIR/ansible/group_vars/all/vault-password.txt"
+
+          cat > "$PROJECT_DIR/ansible/group_vars/all/vault.yml" <<EOF
+          vault_app_secret: "${{ secrets.APP_SECRET }}"
+          vault_admin_password: "${{ secrets.ADMIN_PASSWORD }}"
+          EOF
+
+          ansible-vault encrypt "$PROJECT_DIR/ansible/group_vars/all/vault.yml" \
+            --vault-password-file "$PROJECT_DIR/ansible/group_vars/all/vault-password.txt"
+
+          echo "ANSIBLE_VAULT_PASSWORD_FILE=$GITHUB_WORKSPACE/$PROJECT_DIR/ansible/group_vars/all/vault-password.txt" >> "$GITHUB_ENV"
+
+      - name: Terraform init
+        working-directory: ${{ env.PROJECT_DIR }}/terraform
+        run: terraform init
+
+      - name: Selecionar workspace dev
+        working-directory: ${{ env.PROJECT_DIR }}/terraform
+        run: terraform workspace select dev || terraform workspace new dev
+
+      - name: Terraform apply
+        if: inputs.action == 'apply'
+        working-directory: ${{ env.PROJECT_DIR }}/terraform
+        run: terraform apply -auto-approve
+
+      - name: Terraform destroy
+        if: inputs.action == 'destroy'
+        working-directory: ${{ env.PROJECT_DIR }}/terraform
+        run: terraform destroy -auto-approve
+
+      - name: Mostrar IP público
+        if: inputs.action == 'apply'
+        working-directory: ${{ env.PROJECT_DIR }}/terraform
+        run: terraform output public_ip
+
+      - name: Publicar kubeconfig como artifact
+        if: inputs.action == 'apply'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kubeconfig-devops-labs
+          path: ${{ github.workspace }}/${{ env.PROJECT_DIR }}/kubeconfig-devops-labs.yaml
+          retention-days: 1
+
+      - name: Apagar segredos gravados no runner
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa ~/.ssh/id_rsa.pub
+          rm -f "$PROJECT_DIR/ansible/group_vars/all/vault-password.txt"
+          rm -f "$PROJECT_DIR/ansible/group_vars/all/vault.yml"
