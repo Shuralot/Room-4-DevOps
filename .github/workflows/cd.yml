@@ -1,40 +1,218 @@
-# ABOUTME: Esqueleto do pipeline de Rolling deployment via kubectl apply por SSH.
-# ABOUTME: Renomeie para cd.yml e complete os TODOs de pin da tag, apply e smoke test.
-#
-# Estratégia: Rolling Update, o padrão do Kubernetes. O `kubectl apply` de um
-# Deployment sobe o pod novo, espera ficar Ready (readinessProbe) e só então
-# remove o antigo.
+# Pipeline de Rolling deployment via kubectl apply por SSH com auto-provisionamento sob demanda.
+# Estratégia: Rolling Update, o padrão do Kubernetes.
 #
 # Referência: docs/cd-pipeline.md
-# Pré-requisitos: EC2_SSH_KEY, EC2_HOST, EC2_USER, DOCKERHUB_USERNAME
-# + variable KIND_CLUSTER.
 
 name: Rolling deployment
 
 on:
-  # Deploy manual: quem dispara escolhe qual tag da imagem vai para o cluster.
+  # Disparo automático quando o CI passar com sucesso na branch main
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+  # Disparo manual: permite escolher a tag da imagem ou forçar re-provisionamento
   workflow_dispatch:
     inputs:
       image_tag:
         description: 'Tag da imagem a publicar (Docker Hub)'
         required: true
         default: latest
+      force_reprovision:
+        description: 'Forçar re-provisionamento via Terraform (true/false)'
+        required: false
+        default: 'false'
 
 permissions:
   contents: read
 
-# Centralizados aqui para não repetir string mágica pelos steps.
 env:
   IMAGE_NAME: app-k8s-todolist
   NAMESPACE: todolist
-  KIND_CLUSTER: devops-labs
+  PROJECT_DIR: Terraform
+  AWS_REGION: us-east-1
 
 jobs:
+  prepare-infra:
+    name: Verificar ou Provisionar Infraestrutura
+    # Se disparado por workflow_run, só executa se o CI teve sucesso
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      ec2_host: ${{ steps.resolve-ip.outputs.ec2_host }}
+      infra_status: ${{ steps.check-infra.outputs.status }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verificar se há credenciais AWS configuradas
+        id: check-aws-creds
+        run: |
+          if [ -n "${{ secrets.AWS_ACCESS_KEY_ID }}" ] && [ -n "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "has_aws=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_aws=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Credenciais AWS não configuradas. O workflow dependerá do secret EC2_HOST existente."
+          fi
+
+      - name: Configurar credenciais AWS
+        if: steps.check-aws-creds.outputs.has_aws == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Consultar estado da EC2 na AWS
+        id: check-infra
+        if: steps.check-aws-creds.outputs.has_aws == 'true'
+        run: |
+          echo "Consultando instâncias com tag Name=cloud-lab-02-server..."
+          INSTANCE_DATA=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=cloud-lab-02-server" "Name=instance-state-name,Values=pending,running,stopping,stopped" \
+            --query "Reservations[*].Instances[*].[InstanceId,State.Name,PublicIpAddress]" \
+            --output text)
+
+          INSTANCE_ID=$(echo "$INSTANCE_DATA" | awk '{print $1}' | head -n 1)
+          INSTANCE_STATE=$(echo "$INSTANCE_DATA" | awk '{print $2}' | head -n 1)
+          PUBLIC_IP=$(echo "$INSTANCE_DATA" | awk '{print $3}' | head -n 1)
+
+          FORCE="${{ inputs.force_reprovision || 'false' }}"
+
+          if [ "$FORCE" = "true" ] || [ -z "$INSTANCE_ID" ]; then
+            echo "status=missing" >> "$GITHUB_OUTPUT"
+            echo "Instância não encontrada (ou forçado). Necessário provisionar."
+          elif [ "$INSTANCE_STATE" = "stopped" ] || [ "$INSTANCE_STATE" = "stopping" ]; then
+            echo "status=stopped" >> "$GITHUB_OUTPUT"
+            echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+            echo "Instância encontrada parada: $INSTANCE_ID."
+          elif [ "$INSTANCE_STATE" = "running" ]; then
+            echo "status=running" >> "$GITHUB_OUTPUT"
+            echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+            echo "public_ip=$PUBLIC_IP" >> "$GITHUB_OUTPUT"
+            echo "Instância já ativa: $INSTANCE_ID no IP $PUBLIC_IP."
+          else
+            echo "status=pending" >> "$GITHUB_OUTPUT"
+            echo "instance_id=$INSTANCE_ID" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Ligar EC2 parada
+        id: start-ec2
+        if: steps.check-aws-creds.outputs.has_aws == 'true' && (steps.check-infra.outputs.status == 'stopped' || steps.check-infra.outputs.status == 'stopping')
+        run: |
+          INSTANCE_ID="${{ steps.check-infra.outputs.instance_id }}"
+          echo "Aguardando se estiver stopping..."
+          aws ec2 wait instance-stopped --instance-ids "$INSTANCE_ID" 2>/dev/null || true
+          
+          echo "Iniciando instância $INSTANCE_ID..."
+          aws ec2 start-instances --instance-ids "$INSTANCE_ID"
+          aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+
+          NEW_IP=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" \
+            --query "Reservations[0].Instances[0].PublicIpAddress" --output text)
+          echo "new_ip=$NEW_IP" >> "$GITHUB_OUTPUT"
+          echo "Instância iniciada com sucesso. Novo IP: $NEW_IP"
+
+      # --- Provisionamento via Terraform/Ansible (Apenas se não existir ou forçado) ---
+      - name: Instalar Terraform
+        if: steps.check-aws-creds.outputs.has_aws == 'true' && steps.check-infra.outputs.status == 'missing'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.0"
+
+      - name: Instalar Ansible e collections
+        if: steps.check-aws-creds.outputs.has_aws == 'true' && steps.check-infra.outputs.status == 'missing'
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install ansible
+          ansible-galaxy collection install -r "$PROJECT_DIR/ansible/requirements.yml"
+
+      - name: Preparar chave SSH para o Terraform/Ansible
+        if: steps.check-aws-creds.outputs.has_aws == 'true' && steps.check-infra.outputs.status == 'missing'
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY || secrets.SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          if [ -z "${SSH_KEY:-}" ]; then
+            echo "::error::Secret EC2_SSH_KEY (ou SSH_PRIVATE_KEY) está vazio!"
+            exit 1
+          fi
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+          echo "" >> ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keygen -y -f ~/.ssh/id_rsa > ~/.ssh/id_rsa.pub
+          chmod 644 ~/.ssh/id_rsa.pub
+
+      - name: Preparar Ansible Vault
+        if: steps.check-aws-creds.outputs.has_aws == 'true' && steps.check-infra.outputs.status == 'missing'
+        env:
+          VAULT_PASS: ${{ secrets.ANSIBLE_VAULT_PASSWORD || 'default_lab_vault_pass' }}
+          APP_SECRET: ${{ secrets.APP_SECRET || 'default_app_secret' }}
+          ADMIN_PASS: ${{ secrets.ADMIN_PASSWORD || 'default_admin_pass' }}
+        run: |
+          mkdir -p "$PROJECT_DIR/ansible/group_vars/all"
+          printf '%s\n' "$VAULT_PASS" > "$PROJECT_DIR/ansible/group_vars/all/vault-password.txt"
+          chmod 600 "$PROJECT_DIR/ansible/group_vars/all/vault-password.txt"
+
+          cat > "$PROJECT_DIR/ansible/group_vars/all/vault.yml" <<EOF
+          vault_app_secret: "$APP_SECRET"
+          vault_admin_password: "$ADMIN_PASS"
+          EOF
+
+          ansible-vault encrypt "$PROJECT_DIR/ansible/group_vars/all/vault.yml" \
+            --vault-password-file "$PROJECT_DIR/ansible/group_vars/all/vault-password.txt"
+
+          echo "ANSIBLE_VAULT_PASSWORD_FILE=$GITHUB_WORKSPACE/$PROJECT_DIR/ansible/group_vars/all/vault-password.txt" >> "$GITHUB_ENV"
+
+      - name: Terraform apply (Provisionamento inicial)
+        id: tf-apply
+        if: steps.check-aws-creds.outputs.has_aws == 'true' && steps.check-infra.outputs.status == 'missing'
+        working-directory: ${{ env.PROJECT_DIR }}/terraform
+        run: |
+          terraform init
+          terraform workspace select dev || terraform workspace new dev
+          terraform apply -auto-approve
+          TF_IP=$(terraform output -raw public_ip)
+          echo "provisioned_ip=$TF_IP" >> "$GITHUB_OUTPUT"
+
+      - name: Resolver IP final da EC2
+        id: resolve-ip
+        run: |
+          if [ -n "${{ steps.tf-apply.outputs.provisioned_ip }}" ]; then
+            RESOLVED_IP="${{ steps.tf-apply.outputs.provisioned_ip }}"
+          elif [ -n "${{ steps.start-ec2.outputs.new_ip }}" ]; then
+            RESOLVED_IP="${{ steps.start-ec2.outputs.new_ip }}"
+          elif [ -n "${{ steps.check-infra.outputs.public_ip }}" ]; then
+            RESOLVED_IP="${{ steps.check-infra.outputs.public_ip }}"
+          else
+            RESOLVED_IP="${{ secrets.EC2_HOST }}"
+          fi
+
+          if [ -z "$RESOLVED_IP" ] || [ "$RESOLVED_IP" = "None" ]; then
+            echo "::error::Não foi possível determinar o IP público da EC2!"
+            exit 1
+          fi
+
+          echo "ec2_host=$RESOLVED_IP" >> "$GITHUB_OUTPUT"
+          echo "::notice::IP da EC2 resolvido para o deploy: $RESOLVED_IP"
+
+      - name: Limpar credenciais e chaves do runner
+        if: always()
+        run: |
+          rm -f ~/.ssh/id_rsa ~/.ssh/id_rsa.pub
+          rm -f "$PROJECT_DIR/ansible/group_vars/all/vault-password.txt" 2>/dev/null || true
+          rm -f "$PROJECT_DIR/ansible/group_vars/all/vault.yml" 2>/dev/null || true
+
   deploy:
     name: Deploy to kind
+    needs: prepare-infra
     runs-on: ubuntu-latest
+    env:
+      TARGET_HOST: ${{ needs.prepare-infra.outputs.ec2_host }}
+      KIND_CLUSTER: ${{ vars.KIND_CLUSTER || 'devops-labs' }}
     steps:
-      # Traz k8s/todolist.yaml para o runner.
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -43,13 +221,37 @@ jobs:
           SSH_KEY: ${{ secrets.EC2_SSH_KEY || secrets.SSH_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
+          if [ -z "${SSH_KEY:-}" ]; then
+            echo "::error::Secret EC2_SSH_KEY (ou SSH_PRIVATE_KEY) está vazio!"
+            exit 1
+          fi
           printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+          echo "Aguardando porta SSH estar acessível em $TARGET_HOST..."
+          for i in $(seq 1 30); do
+            if nc -z -w 3 "$TARGET_HOST" 22 2>/dev/null; then
+              echo "Porta SSH respondendo."
+              break
+            fi
+            sleep 5
+          done
+          ssh-keyscan -H "$TARGET_HOST" >> ~/.ssh/known_hosts
+
+      - name: Determine Image Tag
+        id: image-tag
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            TAG="${{ inputs.image_tag }}"
+          else
+            TAG="latest"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Deploying tag: $TAG"
 
       - name: Pin image tag in manifest
         env:
-          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}
+          IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.image-tag.outputs.tag }}
         run: |
           sed -i "s#image: .*#image: ${{ env.IMAGE }}#" k8s/todolist.yaml
           grep "image:" k8s/todolist.yaml
@@ -58,13 +260,20 @@ jobs:
         run: |
           scp -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
             k8s/todolist.yaml \
-            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/todolist.yaml"
+            "${{ secrets.EC2_USER || 'ec2-user' }}@$TARGET_HOST:~/todolist.yaml"
 
       - name: Apply and wait for rollout
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
-            "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" bash -s <<EOF
+            "${{ secrets.EC2_USER || 'ec2-user' }}@$TARGET_HOST" bash -s <<EOF
           set -euo pipefail
+
+          # Garante que o container do kind está rodando (caso a VM tenha sido reiniciada)
+          if command -v docker >/dev/null 2>&1; then
+            if docker ps -a --format '{{.Names}}' | grep -q "${KIND_CLUSTER}-control-plane"; then
+              docker start "${KIND_CLUSTER}-control-plane" 2>/dev/null || true
+            fi
+          fi
 
           # Garante que o ec2-user tem acesso ao kubeconfig do kind
           if [ ! -f ~/.kube/config ] && sudo test -f /root/.kube/config; then
@@ -74,16 +283,17 @@ jobs:
             chmod 600 ~/.kube/config
           fi
 
-          kubectl config use-context "kind-${{ env.KIND_CLUSTER }}"
+          kubectl config use-context "kind-${KIND_CLUSTER}"
           kubectl apply -f ~/todolist.yaml
-          kubectl rollout status deployment/todolist -n "${{ env.NAMESPACE }}" --timeout=120s
+          kubectl rollout status deployment/todolist -n "${NAMESPACE}" --timeout=120s
           EOF
 
       - name: Smoke test /healthz
         run: |
+          echo "Executando smoke test em http://localhost/healthz com Host: todolist.local..."
           for _ in $(seq 1 20); do
             ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
-              "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" \
+              "${{ secrets.EC2_USER || 'ec2-user' }}@$TARGET_HOST" \
               "curl -fsS -H 'Host: todolist.local' http://localhost/healthz" && exit 0
             sleep 3
           done

@@ -103,7 +103,7 @@ jobs:
   # Roda SEMPRE (if: always()) para notificar tanto sucesso quanto falha
   notify:
     name: Notification Webhook
-    needs: [lint, test, deploy-staging, docker-build-push]
+    needs: [lint, test, docker-build-push]
     if: always()
     runs-on: ubuntu-latest
     steps:
