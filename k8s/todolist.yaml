@@ -77,6 +77,15 @@ metadata:
 spec:
   ingressClassName: nginx
   rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: todolist
+                port:
+                  number: 80
     - host: todolist.local
       http:
         paths:
@@ -87,3 +96,4 @@ spec:
                 name: todolist
                 port:
                   number: 80
+
