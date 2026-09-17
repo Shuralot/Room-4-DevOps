@@ -90,7 +90,9 @@ jobs:
       - name: Terraform apply
         if: inputs.action == 'apply'
         working-directory: ${{ env.PROJECT_DIR }}/terraform
-        run: terraform apply -auto-approve
+        run: |
+          aws ec2 delete-key-pair --key-name "cloud-lab-02-key" 2>/dev/null || true
+          terraform apply -auto-approve
 
       - name: Terraform destroy
         if: inputs.action == 'destroy'

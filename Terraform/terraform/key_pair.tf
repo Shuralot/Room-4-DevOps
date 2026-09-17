@@ -1,6 +1,6 @@
 resource "aws_key_pair" "main" {
-  key_name   = var.key_name
-  public_key = file(pathexpand(var.public_key_path))
+  key_name_prefix = "${var.key_name}-"
+  public_key      = file(pathexpand(var.public_key_path))
 
   tags = {
     Name = var.key_name

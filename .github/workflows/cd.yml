@@ -171,6 +171,7 @@ jobs:
         if: steps.check-aws-creds.outputs.has_aws == 'true' && steps.check-infra.outputs.status == 'missing'
         working-directory: ${{ env.PROJECT_DIR }}/terraform
         run: |
+          aws ec2 delete-key-pair --key-name "cloud-lab-02-key" 2>/dev/null || true
           terraform init
           terraform workspace select dev || terraform workspace new dev
           terraform apply -auto-approve
