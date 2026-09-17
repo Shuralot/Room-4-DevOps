@@ -1,9 +1,4 @@
-# ABOUTME: Esqueleto do pipeline de switch blue/green: o cutover do tráfego de produção.
-# ABOUTME: Renomeie para cd-blue-green-switch.yml e complete o TODO do switch.
-#
-# Este workflow é o cutover: vira o tráfego de produção para a cor escolhida,
-# alterando APENAS o selector do Service de produção. O Ingress e os hosts nunca
-# mudam. Rollback = rodar de novo com a cor anterior, que continua rodando.
+# Pipeline de switch blue/green: o cutover do tráfego de produção e mecanismo de rollback.
 #
 # Referência: docs/cd-pipeline.md
 
@@ -34,12 +29,10 @@ jobs:
     name: Vira o tráfego de produção
     runs-on: ubuntu-latest
     steps:
-      # Note que não há checkout: o switch não usa nenhum arquivo do repo, só
-      # muda o estado de um Service que já existe no cluster.
       - name: Configure SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_ed25519
+          echo "${{ secrets.EC2_SSH_KEY || secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
 
@@ -48,27 +41,71 @@ jobs:
           KIND_CLUSTER: ${{ vars.KIND_CLUSTER || 'devops-labs' }}
           COLOR: ${{ inputs.color }}
         run: |
-          # TODO: via SSH (heredoc alimentando bash -s), rode:
-          #
-          # 1. Selecionar o contexto:
-          #      kubectl config use-context "kind-${KIND_CLUSTER}"
-          #
-          # 2. ANTES de virar, confirmar que o slot alvo está saudável no host
-          #    fixo dele. Virar tráfego para um slot doente é causar incidente:
-          #      curl -fsS -H "Host: ${COLOR}.todolist-bg.local" http://localhost/healthz
-          #    Se não responder depois de alguns retries, aborte com exit 1.
-          #
-          # 3. Guardar a cor atual, para imprimir a instrução de rollback:
-          #      PREV=$(kubectl get svc todolist -n "${NS}" -o jsonpath='{.spec.selector.color}')
-          #
-          # 4. O switch em si — trocar o selector do Service de produção:
-          #      kubectl patch svc todolist -n "${NS}" \
-          #        -p "{\"spec\":{\"selector\":{\"app\":\"todolist\",\"color\":\"${COLOR}\"}}}"
-          #
-          # 5. Confirmar produção respondendo no host de produção:
-          #      curl -fsS -H "Host: todolist-bg.local" http://localhost/healthz
-          #
-          # 6. Imprimir no log como fazer o rollback (rodar este mesmo workflow
-          #    com color=${PREV}). Log bom é o que serve na hora do incidente.
-          echo 'TODO: health check do slot + patch do selector + confirmação'
-          exit 1
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+            "${{ secrets.EC2_USER || 'ec2-user' }}@${{ secrets.EC2_HOST }}" \
+            "KIND_CLUSTER='${KIND_CLUSTER}' NS='${NAMESPACE}' COLOR='${COLOR}' bash -s" <<'EOF'
+          set -euo pipefail
+
+          if [ ! -f ~/.kube/config ] && sudo test -f /root/.kube/config; then
+            mkdir -p ~/.kube
+            sudo cp /root/.kube/config ~/.kube/config
+            sudo chown -R ec2-user:ec2-user ~/.kube
+            chmod 600 ~/.kube/config
+          fi
+
+          kubectl config use-context "kind-${KIND_CLUSTER}"
+
+          # 1. Confirmar que o slot alvo está saudável antes de virar
+          echo "Validando saúde do slot ${COLOR} antes do switch..."
+          HEALTHY=false
+          for i in $(seq 1 15); do
+            if curl -fsS -H "Host: ${COLOR}.todolist-bg.local" http://localhost/healthz >/dev/null 2>&1; then
+              HEALTHY=true
+              echo "Slot ${COLOR} saudável!"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$HEALTHY" != "true" ]; then
+            echo "::error::Abortando switch: Slot ${COLOR} não está saudável em http://${COLOR}.todolist-bg.local/healthz"
+            exit 1
+          fi
+
+          # 2. Guardar a cor atual para instrução de rollback
+          PREV=$(kubectl get svc todolist -n "${NS}" -o jsonpath='{.spec.selector.color}' 2>/dev/null || echo "desconhecida")
+          echo "Cor ativa atual em produção: ${PREV}"
+
+          # 3. O switch em si: patch atômico no selector do Service todolist
+          echo "Virando tráfego de produção para a cor ${COLOR}..."
+          kubectl patch svc todolist -n "${NS}" \
+            -p "{\"spec\":{\"selector\":{\"app\":\"todolist\",\"color\":\"${COLOR}\"}}}"
+
+          # 4. Confirmar produção respondendo no host de produção
+          echo "Validando tráfego de produção em http://todolist-bg.local/healthz..."
+          PROD_OK=false
+          for i in $(seq 1 15); do
+            if curl -fsS -H "Host: todolist-bg.local" http://localhost/healthz >/dev/null 2>&1; then
+              PROD_OK=true
+              echo "Produção respondendo com sucesso na cor ${COLOR}!"
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "$PROD_OK" != "true" ]; then
+            echo "::error::Produção falhou após o switch!"
+            exit 1
+          fi
+
+          # 5. Instrução de rollback
+          echo "========================================================="
+          echo "✅ SWITCH CONCLUÍDO COM SUCESSO!"
+          echo "Tráfego de produção virado de '${PREV}' para '${COLOR}'."
+          echo ""
+          echo "🔄 INSTRUÇÃO DE ROLLBACK EM CASO DE INCIDENTE:"
+          echo "Dispare este mesmo workflow ('CD Blue/Green switch') com:"
+          echo "  color = ${PREV}"
+          echo "O tráfego retornará instantaneamente para a versão anterior."
+          echo "========================================================="
+EOF
