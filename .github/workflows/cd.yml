@@ -65,9 +65,9 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
             "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" bash -s <<EOF
           set -euo pipefail
-          kubectl config use-context "kind-${KIND_CLUSTER}"
+          kubectl config use-context "${{env.KIND_CLUSTER}}"
           kubectl apply -f ~/todolist.yaml
-          kubectl rollout status deployment/todolist -n "${NAMESPACE}" --timeout=120s
+          kubectl rollout status deployment/todolist -n "${{env.NAMESPACE}}" --timeout=120s
           EOF
 
       - name: Smoke test /healthz
