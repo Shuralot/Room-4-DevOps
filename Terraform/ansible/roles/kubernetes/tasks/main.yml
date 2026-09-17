@@ -50,6 +50,23 @@
     --kubeconfig /root/.kube/config
   when: kind_cluster_name not in (kind_clusters.stdout_lines | default([]))
 
+- name: Garantir diretorio .kube para ec2-user
+  ansible.builtin.file:
+    path: /home/ec2-user/.kube
+    state: directory
+    owner: ec2-user
+    group: ec2-user
+    mode: "0755"
+
+- name: Copiar kubeconfig para ec2-user
+  ansible.builtin.copy:
+    src: /root/.kube/config
+    dest: /home/ec2-user/.kube/config
+    remote_src: true
+    owner: ec2-user
+    group: ec2-user
+    mode: "0600"
+
 - name: Aguardar o node control-plane ficar Ready
   ansible.builtin.command: >
     kubectl wait --for=condition=Ready node --all --timeout=180s
