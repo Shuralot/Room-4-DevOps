@@ -172,7 +172,10 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}/terraform
         run: |
           aws ec2 delete-key-pair --key-name "cloud-lab-02-key" 2>/dev/null || true
-          terraform init
+          terraform init \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET || secrets.TF_STATE_BUCKET || 'tfstates-771268408020-us-east-1-an' }}" \
+            -backend-config="key=projeto-2/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION || 'us-east-1' }}"
           terraform workspace select dev || terraform workspace new dev
           terraform apply -auto-approve
           TF_IP=$(terraform output -raw public_ip)
