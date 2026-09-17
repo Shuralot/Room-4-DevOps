@@ -1,4 +1,4 @@
-# CI/CD & Cloud Infrastructure — Room 4 DevOps
+# CI/CD & Cloud Infrastructure — Room 4 DevOps Pós
 
 [![CI](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/ci.yml/badge.svg)](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/ci.yml)
 [![Rolling deployment](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/cd.yml/badge.svg)](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/cd.yml)
