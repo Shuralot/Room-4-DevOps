@@ -25,7 +25,7 @@ permissions:
 
 # Centralizados aqui para não repetir string mágica pelos steps.
 env:
-  IMAGE_NAME: shuralot/app-k8s-todolist
+  IMAGE_NAME: app-k8s-todolist
   NAMESPACE: todolist
   KIND_CLUSTER: devops-labs
 
@@ -39,9 +39,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure SSH key
+        env:
+          SSH_KEY: ${{ secrets.EC2_SSH_KEY || secrets.SSH_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "${{ secrets.EC2_HOST }}" >> ~/.ssh/known_hosts
 
@@ -49,8 +51,8 @@ jobs:
         env:
           IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:${{ inputs.image_tag }}
         run: |
-          sed -i "s#image: .*${{ env.IMAGE_NAME }}.*#image: ${{ env.IMAGE }}#" k8s/todolist.yaml
-          echo "${{ env.IMAGE }}"
+          sed -i "s#image: .*#image: ${{ env.IMAGE }}#" k8s/todolist.yaml
+          grep "image:" k8s/todolist.yaml
 
       - name: Copy manifest to EC2
         run: |
@@ -59,15 +61,22 @@ jobs:
             "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~/todolist.yaml"
 
       - name: Apply and wait for rollout
-        env:
-          KIND_CLUSTER: ${{ env.KIND_CLUSTER }}
         run: |
           ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
             "${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}" bash -s <<EOF
           set -euo pipefail
-          kubectl config use-context "${{env.KIND_CLUSTER}}"
+
+          # Garante que o ec2-user tem acesso ao kubeconfig do kind
+          if [ ! -f ~/.kube/config ] && sudo test -f /root/.kube/config; then
+            mkdir -p ~/.kube
+            sudo cp /root/.kube/config ~/.kube/config
+            sudo chown -R ec2-user:ec2-user ~/.kube
+            chmod 600 ~/.kube/config
+          fi
+
+          kubectl config use-context "kind-${{ env.KIND_CLUSTER }}"
           kubectl apply -f ~/todolist.yaml
-          kubectl rollout status deployment/todolist -n "${{env.NAMESPACE}}" --timeout=120s
+          kubectl rollout status deployment/todolist -n "${{ env.NAMESPACE }}" --timeout=120s
           EOF
 
       - name: Smoke test /healthz
