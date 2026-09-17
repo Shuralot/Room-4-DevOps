@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/ci.yml/badge.svg)](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/ci.yml)
 [![Rolling deployment](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/cd.yml/badge.svg)](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/cd.yml)
+[![Blue/Green Deploy](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/cd-blue-green.yml/badge.svg)](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/cd-blue-green.yml)
+[![Blue/Green Switch](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/cd-blue-green-switch.yml/badge.svg)](https://github.com/Shuralot/Room-4-DevOps/actions/workflows/cd-blue-green-switch.yml)
 
 Repositório unificado de Engenharia de Software / DevOps cobrindo a esteira completa de entrega contínua: desde a validação com Quality Gates (CI), passando por Infrastructure as Code (Terraform & Ansible), até o deploy contínuo em Kubernetes (CD) com estratégias de **Rolling Update** e **Blue/Green com Switch e Rollback**.
 
